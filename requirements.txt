@@ -1,0 +1,7 @@
+PySide6
+opencv-python
+piexif
+Pillow
+numpy
+onnxruntime
+tqdm
