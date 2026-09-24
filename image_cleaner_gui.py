@@ -13,8 +13,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 from PIL import Image, ImageOps
-from PySide6.QtCore import QProcess, Qt, QRect, QPoint
-from PySide6.QtGui import QImage, QMouseEvent, QPainter, QPen, QPixmap
+from PySide6.QtCore import QProcess, Qt, QRect, QPoint, Signal
+from PySide6.QtGui import QImage, QKeyEvent, QKeySequence, QMouseEvent, QPainter, QPen, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -78,6 +78,8 @@ def build_output_exif(src_exif_bytes: bytes | None, strip_gps: bool) -> bytes | 
 
 
 class RectCanvas(QLabel):
+    rect_drawn = Signal()
+
     def __init__(self) -> None:
         super().__init__()
         self.setMinimumSize(700, 450)
@@ -176,6 +178,9 @@ class RectCanvas(QLabel):
         h = abs(y2 - y1)
         if w > 2 and h > 2:
             self.rects.append((x, y, w, h))
+            self.update()
+            self.rect_drawn.emit()
+            return
         self.update()
 
     def paintEvent(self, event) -> None:
@@ -213,6 +218,11 @@ class ManualTouchupDialog(QDialog):
     def __init__(self, parent: QWidget | None = None, *, strip_gps_default: bool = False) -> None:
         super().__init__(parent)
         self.setWindowTitle("Manual Touch-up for Missed Objects")
+        self.setWindowFlags(
+            self.windowFlags()
+            | Qt.WindowType.WindowMinimizeButtonHint
+            | Qt.WindowType.WindowMaximizeButtonHint
+        )
         self.resize(1200, 820)
 
         self.folder_path: Path | None = None
@@ -253,6 +263,10 @@ class ManualTouchupDialog(QDialog):
         self.strip_gps_cb = QCheckBox("Strip GPS metadata on save")
         self.strip_gps_cb.setChecked(strip_gps_default)
 
+        self.auto_apply_save_cb = QCheckBox("Auto apply effect + save when a box is drawn")
+        self.auto_apply_save_cb.setChecked(True)
+        self.canvas.rect_drawn.connect(self._on_rect_drawn)
+
         self.btn_prev = QPushButton("Prev")
         self.btn_prev.clicked.connect(self._prev_image)
         self.btn_next = QPushButton("Next")
@@ -268,6 +282,10 @@ class ManualTouchupDialog(QDialog):
 
         self.btn_save = QPushButton("Save (Overwrite)")
         self.btn_save.clicked.connect(self._save_current)
+
+        self.btn_fullscreen = QPushButton("Full Screen (F11)")
+        self.btn_fullscreen.clicked.connect(self._toggle_fullscreen)
+        QShortcut(QKeySequence(Qt.Key.Key_F11), self, activated=self._toggle_fullscreen)
 
         self.status_label = QLabel("Draw boxes around missed objects, then apply effect and save.")
 
@@ -291,6 +309,7 @@ class ManualTouchupDialog(QDialog):
         controls.addRow("Inpaint radius", self.inpaint_radius_spin)
         controls.addRow("Pixelate block", self.pixelate_block_spin)
         controls.addRow("", self.strip_gps_cb)
+        controls.addRow("", self.auto_apply_save_cb)
 
         top = QGroupBox("Manual Redaction")
         top.setLayout(controls)
@@ -300,6 +319,7 @@ class ManualTouchupDialog(QDialog):
         action_row.addWidget(self.btn_clear_boxes)
         action_row.addWidget(self.btn_apply)
         action_row.addWidget(self.btn_save)
+        action_row.addWidget(self.btn_fullscreen)
 
         root_layout = QVBoxLayout()
         root_layout.addWidget(top)
@@ -409,6 +429,27 @@ class ManualTouchupDialog(QDialog):
         self.current_image_bgr = arr
         self.canvas.set_image(self.current_image_bgr)
         self.status_label.setText(f"Applied {effect} to {len(rects)} box(es).")
+
+    def _toggle_fullscreen(self) -> None:
+        if self.isFullScreen():
+            self.showNormal()
+            self.btn_fullscreen.setText("Full Screen (F11)")
+        else:
+            self.showFullScreen()
+            self.btn_fullscreen.setText("Exit Full Screen (F11/Esc)")
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        # Esc leaves full screen instead of closing the dialog.
+        if event.key() == Qt.Key.Key_Escape and self.isFullScreen():
+            self._toggle_fullscreen()
+            return
+        super().keyPressEvent(event)
+
+    def _on_rect_drawn(self) -> None:
+        if not self.auto_apply_save_cb.isChecked():
+            return
+        self._apply_effect()
+        self._save_current()
 
     def _save_current(self) -> None:
         if self.current_image_bgr is None or self.current_index < 0:
